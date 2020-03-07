@@ -9,9 +9,11 @@ import time
 
 from tqdm import tqdm
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data
+import torch.quantization
 import transformer.Constants as Constants
 from dataset import TranslationDataset, paired_collate_fn
 from transformer.Models import Transformer
@@ -101,9 +103,8 @@ def train_epoch(model, training_data, optimizer, device, smoothing):
     accuracy = n_word_correct/n_word_total
     return loss_per_word, accuracy
 
-def eval_epoch(model, validation_data, device):
+def eval_epoch(model, validation_data, device, profile='none'):
     ''' Epoch operation in evaluation phase '''
-
     model.eval()
 
     total_loss = 0
@@ -111,6 +112,8 @@ def eval_epoch(model, validation_data, device):
     n_word_correct = 0
 
     with torch.no_grad():
+        total_time = 0
+        num = 0
         for batch in validation_data:
 
             # prepare data
@@ -120,7 +123,21 @@ def eval_epoch(model, validation_data, device):
 
             # forward
             # pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
-            pred = model(src_seq, src_sp, src_pos, tgt_seq, tgt_pos)
+            start_time = time.time()
+            if profile != 'none':
+                with torch.autograd.profiler.profile() as prof:
+                    pred = model(src_seq, src_sp, src_pos, tgt_seq, tgt_pos)
+                if profile == 'stdio':
+                    print(prof)
+                else:
+                    if not os.path.exists('LOGS'):
+                        os.makedirs('LOGS')
+                    prof.export_chrome_trace('LOGS/'+profile+'.json')
+            else:
+                pred = model(src_seq, src_sp, src_pos, tgt_seq, tgt_pos)
+            end_time = time.time()
+            total_time += end_time-start_time
+            num = num + 1
             loss, n_correct = cal_performance(pred, gold, smoothing=False)
 
             # note keeping
@@ -130,6 +147,8 @@ def eval_epoch(model, validation_data, device):
             n_word = non_pad_mask.sum().item()
             n_word_total += n_word
             n_word_correct += n_correct
+
+        print("infer time",  total_time/num)
 
     loss_per_word = total_loss/n_word_total
     accuracy = n_word_correct/n_word_total
@@ -189,7 +208,7 @@ def main():
 
     parser.add_argument('-data', default='../pssp-data/dataset.pt')
 
-    parser.add_argument('-epoch', type=int, default=10)
+    parser.add_argument('-epoch', type=int, default=1)
     parser.add_argument('-batch_size', type=int, default=4)
 
     #parser.add_argument('-d_word_vec', type=int, default=512)
@@ -200,7 +219,7 @@ def main():
 
     parser.add_argument('-n_head', type=int, default=8)
     parser.add_argument('-n_layers', type=int, default=2)
-    parser.add_argument('-n_warmup_steps', type=int, default=4000)
+    parser.add_argument('-n_warmup_steps', type=int, default=40)
 
     parser.add_argument('-dropout', type=float, default=0.5)
     parser.add_argument('-embs_share_weight', action='store_true')
@@ -213,6 +232,8 @@ def main():
 
     parser.add_argument('-no_cuda', action='store_true')
     parser.add_argument('-label_smoothing', action='store_true')
+    parser.add_argument('-int8', action='store_true')
+    parser.add_argument('-profile', type=str, default='none')
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
@@ -236,7 +257,7 @@ def main():
             'The src/tgt word2idx table are different but asked to share word embedding.'
 
     device = torch.device('cuda' if opt.cuda else 'cpu')
-    torch.cuda.set_device(1)
+    #torch.cuda.set_device(1)
     transformer = Transformer(
         opt.src_vocab_size,
         opt.tgt_vocab_size,
@@ -258,8 +279,21 @@ def main():
             betas=(0.9, 0.98), eps=1e-09),
         opt.d_model, opt.n_warmup_steps)
 
-    train(transformer, training_data, validation_data, optimizer, device ,opt)
-
+#   train(transformer, training_data, validation_data, optimizer, device ,opt)
+    transformer.load_state_dict(torch.load("result/model.pth"))
+    if opt.int8:
+        print("Before Quant")
+        print(transformer)
+        transformer_quant = torch.quantization.quantize_dynamic(
+                transformer,
+                {nn.Linear},
+                dtype=torch.qint8
+                )
+        print("After Quant")
+        print(transformer_quant)
+        valid_loss, valid_accu = eval_epoch(transformer_quant, validation_data, device, profile=opt.profile)
+    else:
+        valid_loss, valid_accu = eval_epoch(transformer, validation_data, device, profile=opt.profile)
 
 def prepare_dataloaders(data, opt):
     # ========= Preparing DataLoader =========#
