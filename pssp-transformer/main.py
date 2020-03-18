@@ -128,7 +128,7 @@ def eval_epoch(model, validation_data, device, profile='none'):
                 with torch.autograd.profiler.profile() as prof:
                     pred = model(src_seq, src_sp, src_pos, tgt_seq, tgt_pos)
                 if profile == 'stdio':
-                    print(prof)
+                    print(prof.key_averages().table(sort_by="self_cpu_time_total"))
                 else:
                     if not os.path.exists('LOGS'):
                         os.makedirs('LOGS')
