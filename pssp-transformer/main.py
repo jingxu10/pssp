@@ -114,39 +114,61 @@ def eval_epoch(model, validation_data, device, profile='none'):
     with torch.no_grad():
         total_time = 0
         num = 0
-        for batch in validation_data:
+        if profile != 'none':
+            with torch.autograd.profiler.profile() as prof:
+                for batch in validation_data:
 
-            # prepare data
-            # src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
-            src_seq, src_sp, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
-            gold = tgt_seq[:, 1:]
+                    # prepare data
+                    # src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
+                    src_seq, src_sp, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
+                    gold = tgt_seq[:, 1:]
 
-            # forward
-            # pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
-            start_time = time.time()
-            if profile != 'none':
-                with torch.autograd.profiler.profile() as prof:
+                    # forward
+                    # pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
+                    start_time = time.time()
                     pred = model(src_seq, src_sp, src_pos, tgt_seq, tgt_pos)
-                if profile == 'stdio':
-                    print(prof.key_averages().table(sort_by="self_cpu_time_total"))
-                else:
-                    if not os.path.exists('LOGS'):
-                        os.makedirs('LOGS')
-                    prof.export_chrome_trace('LOGS/'+profile+'.json')
+                    end_time = time.time()
+                    total_time += end_time-start_time
+                    num = num + 1
+                    loss, n_correct = cal_performance(pred, gold, smoothing=False)
+
+                    # note keeping
+                    total_loss += loss.item()
+
+                    non_pad_mask = gold.ne(Constants.PAD)
+                    n_word = non_pad_mask.sum().item()
+                    n_word_total += n_word
+                    n_word_correct += n_correct
+            if profile == 'stdio':
+                print(prof.key_averages().table(sort_by="self_cpu_time_total"))
             else:
+                if not os.path.exists('LOGS'):
+                    os.makedirs('LOGS')
+                prof.export_chrome_trace('LOGS/'+profile+'.json')
+        else:
+            for batch in validation_data:
+
+                # prepare data
+                # src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
+                src_seq, src_sp, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
+                gold = tgt_seq[:, 1:]
+
+                # forward
+                # pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
+                start_time = time.time()
                 pred = model(src_seq, src_sp, src_pos, tgt_seq, tgt_pos)
-            end_time = time.time()
-            total_time += end_time-start_time
-            num = num + 1
-            loss, n_correct = cal_performance(pred, gold, smoothing=False)
+                end_time = time.time()
+                total_time += end_time-start_time
+                num = num + 1
+                loss, n_correct = cal_performance(pred, gold, smoothing=False)
 
-            # note keeping
-            total_loss += loss.item()
+                # note keeping
+                total_loss += loss.item()
 
-            non_pad_mask = gold.ne(Constants.PAD)
-            n_word = non_pad_mask.sum().item()
-            n_word_total += n_word
-            n_word_correct += n_correct
+                non_pad_mask = gold.ne(Constants.PAD)
+                n_word = non_pad_mask.sum().item()
+                n_word_total += n_word
+                n_word_correct += n_correct
 
         print("infer time",  total_time/num)
 
